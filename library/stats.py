@@ -380,6 +380,19 @@ class Gpu:
     last_values_gpu_fps = []
     last_values_gpu_fan_speed = []
     last_values_gpu_frequency = []
+    intel_memory_notice_logged = False
+
+    @staticmethod
+    def _is_expected_intel_memory_unsupported() -> bool:
+        try:
+            return (
+                platform.system() == 'Linux'
+                and hasattr(sensors, 'GpuType')
+                and hasattr(sensors, 'DETECTED_GPU')
+                and sensors.DETECTED_GPU == sensors.GpuType.INTEL
+            )
+        except:
+            return False
 
     @classmethod
     def stats(cls):
@@ -387,6 +400,10 @@ class Gpu:
         fps = sensors.Gpu.fps()
         fan_percent = sensors.Gpu.fan_percent()
         freq_ghz = sensors.Gpu.frequency() / 1000
+        expected_intel_memory_unsupported = cls._is_expected_intel_memory_unsupported()
+        if expected_intel_memory_unsupported and not cls.intel_memory_notice_logged:
+            logger.info("Intel GPU memory metrics are not available on Linux Python sensors backend. Memory widgets will be hidden.")
+            cls.intel_memory_notice_logged = True
 
         theme_gpu_data = config.THEME_DATA['STATS']['GPU']
 
@@ -409,7 +426,8 @@ class Gpu:
         if math.isnan(memory_percentage):
             memory_percentage = 0
             if gpu_mem_graph_data['SHOW'] or gpu_mem_radial_data['SHOW']:
-                logger.warning("Your GPU memory relative usage (%) is not supported yet")
+                if not expected_intel_memory_unsupported:
+                    logger.warning("Your GPU memory relative usage (%) is not supported yet")
                 gpu_mem_graph_data['SHOW'] = False
                 gpu_mem_radial_data['SHOW'] = False
 
@@ -417,7 +435,8 @@ class Gpu:
         if math.isnan(memory_used_mb):
             memory_used_mb = 0
             if gpu_mem_text_data['SHOW']:
-                logger.warning("Your GPU memory absolute usage (M) is not supported yet")
+                if not expected_intel_memory_unsupported:
+                    logger.warning("Your GPU memory absolute usage (M) is not supported yet")
                 gpu_mem_text_data['SHOW'] = False
 
         display_themed_progress_bar(gpu_mem_graph_data, memory_percentage)
@@ -461,7 +480,8 @@ class Gpu:
             memory_percentage = 0
             if gpu_mem_percent_graph_data['SHOW'] or gpu_mem_percent_radial_data['SHOW'] or gpu_mem_percent_text_data[
                 'SHOW'] or gpu_mem_percent_line_graph_data['SHOW']:
-                logger.warning("Your GPU memory relative usage (%) is not supported yet")
+                if not expected_intel_memory_unsupported:
+                    logger.warning("Your GPU memory relative usage (%) is not supported yet")
                 gpu_mem_percent_graph_data['SHOW'] = False
                 gpu_mem_percent_radial_data['SHOW'] = False
                 gpu_mem_percent_text_data['SHOW'] = False
@@ -476,7 +496,8 @@ class Gpu:
         if math.isnan(memory_used_mb):
             memory_used_mb = 0
             if gpu_mem_used_text_data['SHOW']:
-                logger.warning("Your GPU memory absolute usage (M) is not supported yet")
+                if not expected_intel_memory_unsupported:
+                    logger.warning("Your GPU memory absolute usage (M) is not supported yet")
                 gpu_mem_used_text_data['SHOW'] = False
 
         display_themed_value(
@@ -491,7 +512,8 @@ class Gpu:
         if math.isnan(total_memory_mb):
             total_memory_mb = 0
             if gpu_mem_total_text_data['SHOW']:
-                logger.warning("Your GPU total memory capacity (M) is not supported yet")
+                if not expected_intel_memory_unsupported:
+                    logger.warning("Your GPU total memory capacity (M) is not supported yet")
                 gpu_mem_total_text_data['SHOW'] = False
 
         display_themed_value(

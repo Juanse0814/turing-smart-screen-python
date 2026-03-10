@@ -89,6 +89,7 @@ Some themes are already included for a quick start!
 * Display configuration using GUI configuration wizard or `config.yaml` file: no Python code to edit.
 * Compatible with [3.5" & 5" smart screen models (Turing, XuanFang...)](https://github.com/mathoudebine/turing-smart-screen-python/wiki/Hardware-revisions). Backplate RGB LEDs are also supported for available models!
 * Support [multiple hardware sensors and metrics (CPU/GPU usage, temperatures, memory, disks, etc)](https://github.com/mathoudebine/turing-smart-screen-python/wiki/System-monitor-:-themes#stats-entry) with configurable refresh intervals.
+	* On Linux, Intel GPU metrics are supported. For best load/frequency coverage, install `intel-gpu-tools` (provides `intel_gpu_top`).
 * Allow [creation of themes (see `res/themes`) with `theme.yaml` files using theme editor](https://github.com/mathoudebine/turing-smart-screen-python/wiki/System-monitor-:-themes) to be [shared with the community!](https://github.com/mathoudebine/turing-smart-screen-python/discussions/categories/themes)
 * Easy to expand: [custom Python data sources](https://github.com/mathoudebine/turing-smart-screen-python/wiki/System-monitor-:-themes#add-custom-stats-to-a-theme) can be written to pull specific information and display it on themes like any other sensor.
 * Auto-detect COM port based on the selected smart screen model.

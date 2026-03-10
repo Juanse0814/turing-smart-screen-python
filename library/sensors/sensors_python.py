@@ -22,11 +22,16 @@
 # For all platforms (Linux, Windows, macOS) but not all HW is supported
 
 import math
+import json
+import glob
+import os
 import platform
+import shutil
+import subprocess
 import sys
 from collections import namedtuple
 from enum import IntEnum, auto
-from typing import Tuple
+from typing import Dict, List, Tuple
 
 # Nvidia GPU
 import GPUtil
@@ -55,6 +60,7 @@ class GpuType(IntEnum):
     UNSUPPORTED = auto()
     AMD = auto()
     NVIDIA = auto()
+    INTEL = auto()
 
 
 DETECTED_GPU = GpuType.UNSUPPORTED
@@ -190,6 +196,8 @@ class Gpu(sensors.Gpu):
             return GpuAmd.stats()
         elif DETECTED_GPU == GpuType.NVIDIA:
             return GpuNvidia.stats()
+        elif DETECTED_GPU == GpuType.INTEL:
+            return GpuIntel.stats()
         else:
             return math.nan, math.nan, math.nan, math.nan, math.nan
 
@@ -199,6 +207,8 @@ class Gpu(sensors.Gpu):
             return GpuAmd.fps()
         elif DETECTED_GPU == GpuType.NVIDIA:
             return GpuNvidia.fps()
+        elif DETECTED_GPU == GpuType.INTEL:
+            return GpuIntel.fps()
         else:
             return -1
 
@@ -208,6 +218,8 @@ class Gpu(sensors.Gpu):
             return GpuAmd.fan_percent()
         elif DETECTED_GPU == GpuType.NVIDIA:
             return GpuNvidia.fan_percent()
+        elif DETECTED_GPU == GpuType.INTEL:
+            return GpuIntel.fan_percent()
         else:
             return math.nan
 
@@ -217,6 +229,8 @@ class Gpu(sensors.Gpu):
             return GpuAmd.frequency()
         elif DETECTED_GPU == GpuType.NVIDIA:
             return GpuNvidia.frequency()
+        elif DETECTED_GPU == GpuType.INTEL:
+            return GpuIntel.frequency()
         else:
             return math.nan
 
@@ -231,6 +245,10 @@ class Gpu(sensors.Gpu):
         elif GpuAmd.is_available():
             logger.info("Detected AMD GPU(s)")
             DETECTED_GPU = GpuType.AMD
+        # Intel Linux GPU (i915/xe)
+        elif GpuIntel.is_available():
+            logger.info("Detected Intel GPU(s)")
+            DETECTED_GPU = GpuType.INTEL
         else:
             logger.warning("No supported GPU found")
             DETECTED_GPU = GpuType.UNSUPPORTED
@@ -415,6 +433,237 @@ class GpuAmd(sensors.Gpu):
                 return False
         except:
             return False
+
+
+def _try_parse_float(value) -> float:
+    if value is None:
+        return math.nan
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, str):
+        stripped = value.strip().replace('%', '')
+        try:
+            return float(stripped)
+        except:
+            return math.nan
+
+    return math.nan
+
+
+class GpuIntel(sensors.Gpu):
+    @staticmethod
+    def _linux_intel_cards() -> List[str]:
+        if platform.system() != "Linux":
+            return []
+
+        intel_cards = []
+        for card_path in sorted(glob.glob('/sys/class/drm/card[0-9]*')):
+            vendor_path = os.path.join(card_path, 'device', 'vendor')
+            try:
+                with open(vendor_path, 'r') as vendor_file:
+                    vendor = vendor_file.read().strip().lower()
+                if vendor == '0x8086':
+                    intel_cards.append(card_path)
+            except:
+                continue
+
+        return intel_cards
+
+    @staticmethod
+    def _run_intel_gpu_top() -> Dict:
+        if shutil.which("intel_gpu_top") is None:
+            return {}
+
+        # Query a short sample in JSON mode, then parse the most recent frame.
+        try:
+            proc = subprocess.Popen(
+                ["intel_gpu_top", "-J", "-s", "200", "-o", "-"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                stdout, _ = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired as timeout_error:
+                proc.kill()
+                partial_stdout = timeout_error.stdout or ""
+                remaining_stdout, _ = proc.communicate()
+                stdout = partial_stdout + (remaining_stdout or "")
+        except:
+            return {}
+
+        if not stdout:
+            return {}
+
+        stdout = stdout.strip()
+        try:
+            parsed = json.loads(stdout)
+            if isinstance(parsed, dict):
+                return parsed
+        except:
+            pass
+
+        # intel_gpu_top can emit one JSON object per line.
+        parsed_frames = []
+        for line in stdout.splitlines():
+            line = line.strip().rstrip(',')
+            if not line.startswith('{'):
+                continue
+            try:
+                frame = json.loads(line)
+                if isinstance(frame, dict):
+                    parsed_frames.append(frame)
+            except:
+                continue
+
+        if parsed_frames:
+            return parsed_frames[-1]
+
+        return {}
+
+    @staticmethod
+    def _extract_load_from_gpu_top(frame: Dict) -> float:
+        engines = frame.get("engines", {})
+        busy_values = []
+
+        if isinstance(engines, dict):
+            for engine_stats in engines.values():
+                if isinstance(engine_stats, dict) and "busy" in engine_stats:
+                    busy = _try_parse_float(engine_stats.get("busy"))
+                    if not math.isnan(busy):
+                        busy_values.append(busy)
+
+        if not busy_values:
+            return math.nan
+
+        return sum(busy_values) / len(busy_values)
+
+    @staticmethod
+    def _read_first_float(paths: List[str], divide_by: float = 1.0) -> float:
+        for path in paths:
+            try:
+                with open(path, 'r') as value_file:
+                    value = float(value_file.read().strip())
+                return value / divide_by
+            except:
+                continue
+
+        return math.nan
+
+    @staticmethod
+    def _frequency_from_sysfs(intel_cards: List[str]) -> float:
+        freq_paths = []
+        for card_path in intel_cards:
+            freq_paths.extend([
+                os.path.join(card_path, 'gt_cur_freq_mhz'),
+                os.path.join(card_path, 'device', 'gt_cur_freq_mhz'),
+                os.path.join(card_path, 'device', 'tile0', 'gt0', 'freq0', 'cur_freq'),
+            ])
+
+        return GpuIntel._read_first_float(freq_paths)
+
+    @staticmethod
+    def _temperature_from_hwmon(intel_cards: List[str]) -> float:
+        temp_paths = []
+        for card_path in intel_cards:
+            temp_paths.extend(glob.glob(os.path.join(card_path, 'device', 'hwmon', 'hwmon*', 'temp*_input')))
+
+        return GpuIntel._read_first_float(temp_paths, divide_by=1000.0)
+
+    @staticmethod
+    def _load_from_sysfs(intel_cards: List[str]) -> float:
+        busy_paths = []
+        act_freq_paths = []
+        max_freq_paths = []
+
+        for card_path in intel_cards:
+            busy_paths.extend([
+                os.path.join(card_path, 'device', 'gpu_busy_percent'),
+                os.path.join(card_path, 'device', 'tile0', 'gt0', 'gpu_busy_percent'),
+            ])
+            act_freq_paths.extend([
+                os.path.join(card_path, 'device', 'tile0', 'gt0', 'freq0', 'act_freq'),
+                os.path.join(card_path, 'device', 'gt_act_freq_mhz'),
+            ])
+            max_freq_paths.extend([
+                os.path.join(card_path, 'device', 'tile0', 'gt0', 'freq0', 'max_freq'),
+                os.path.join(card_path, 'device', 'gt_max_freq_mhz'),
+                os.path.join(card_path, 'device', 'tile0', 'gt0', 'freq0', 'rp0_freq'),
+            ])
+
+        # Preferred path when kernel exposes direct engine busy percentage.
+        busy_percent = GpuIntel._read_first_float(busy_paths)
+        if not math.isnan(busy_percent):
+            return min(max(busy_percent, 0.0), 100.0)
+
+        # Fallback estimate for xe/i915 drivers based on active/max GT frequency.
+        act_freq = GpuIntel._read_first_float(act_freq_paths)
+        max_freq = GpuIntel._read_first_float(max_freq_paths)
+        if not math.isnan(act_freq) and not math.isnan(max_freq) and max_freq > 0:
+            estimated_load = (act_freq / max_freq) * 100.0
+            return min(max(estimated_load, 0.0), 100.0)
+
+        return math.nan
+
+    @staticmethod
+    def stats() -> Tuple[
+        float, float, float, float, float]:  # load (%) / used mem (%) / used mem (Mb) / total mem (Mb) / temp (°C)
+        intel_cards = GpuIntel._linux_intel_cards()
+        if not intel_cards:
+            return math.nan, math.nan, math.nan, math.nan, math.nan
+
+        frame = GpuIntel._run_intel_gpu_top()
+        load = GpuIntel._extract_load_from_gpu_top(frame)
+        if math.isnan(load):
+            load = GpuIntel._load_from_sysfs(intel_cards)
+        temperature = GpuIntel._temperature_from_hwmon(intel_cards)
+
+        # Intel memory usage is not uniformly exposed on Linux across drivers/distros.
+        return load, math.nan, math.nan, math.nan, temperature
+
+    @staticmethod
+    def fps() -> int:
+        # Not supported by Python libraries
+        return -1
+
+    @staticmethod
+    def fan_percent() -> float:
+        try:
+            fans = sensors_fans()
+            if fans:
+                for name, entries in fans.items():
+                    for entry in entries:
+                        if "gpu" in (entry.label.lower() or name.lower()):
+                            return entry.percent
+        except:
+            pass
+
+        return math.nan
+
+    @staticmethod
+    def frequency() -> float:
+        intel_cards = GpuIntel._linux_intel_cards()
+        if not intel_cards:
+            return math.nan
+
+        frequency_mhz = GpuIntel._frequency_from_sysfs(intel_cards)
+        if not math.isnan(frequency_mhz):
+            return frequency_mhz
+
+        # Fallback from intel_gpu_top data if sysfs is unavailable.
+        frame = GpuIntel._run_intel_gpu_top()
+        for key in ("freq", "frequency", "gt_freq_mhz"):
+            parsed = _try_parse_float(frame.get(key))
+            if not math.isnan(parsed):
+                return parsed
+
+        return math.nan
+
+    @staticmethod
+    def is_available() -> bool:
+        return len(GpuIntel._linux_intel_cards()) > 0
 
 
 class Memory(sensors.Memory):
