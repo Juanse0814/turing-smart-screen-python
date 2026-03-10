@@ -63,6 +63,12 @@ Or the troubleshooting page: https://github.com/mathoudebine/turing-smart-screen
         os._exit(0)
 
 try:
+    import threading
+    # On Linux, force the ayatana-appindicator backend for pystray so the tray menu works on
+    # KDE Plasma / Wayland and other SNI-compatible desktops. Falls back silently if unavailable.
+    if platform.system() == 'Linux':
+        import os as _os
+        _os.environ.setdefault('PYSTRAY_BACKEND', 'appindicator')
     import pystray
 except:
     # If pystray cannot be loaded do not stop the program, just ignore it. The tray icon will not be displayed.
@@ -178,7 +184,11 @@ if __name__ == "__main__":
         )
 
         # For platforms != macOS, display the tray icon now with non-blocking function
-        if platform.system() != "Darwin":
+        if platform.system() == "Linux":
+            # Use a daemon thread on Linux so the pystray event loop processes menu events correctly
+            threading.Thread(target=tray_icon.run, daemon=True).start()
+            logger.info("Tray icon has been displayed")
+        elif platform.system() != "Darwin":
             tray_icon.run_detached()
             logger.info("Tray icon has been displayed")
     except:
